@@ -9,14 +9,15 @@ The app downloads only the tile it needs, using the same tile names as its eleva
 https://raw.githubusercontent.com/Dazix/caelis-landmarks/v1/tiles/<N50>/<N50E015>.peaks
 ```
 
-A request carries nothing but the tile name. Each tag is immutable: a change to the file format gets
-a new tag and a matching change in the app, never a rewrite of an existing tag.
+A request carries nothing but the tile name. A tag stands for a file format: a change to the format
+gets a new tag and a matching change in the app. While the app is not yet released, `v1` is moved
+forward when the data grows.
 
 ## Coverage
 
 | Tag | Countries | Tiles | Peaks |
 | --- | --- | --- | --- |
-| `v1` | Czech Republic | 21 | 9 609 |
+| `v1` | Czech Republic, Slovakia, Austria, Poland, Germany | 148 | 70 296 |
 
 Every tile that the source data covers has a file, so an empty tile means there are no named peaks
 there. A missing file (HTTP 404) means the region is not covered. Tiles on a border only include the
