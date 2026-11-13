@@ -10,8 +10,18 @@ goes into the APK.
 
     python3 data_pipeline/generate_peaks.py <out_dir> <region.poi> [<region.poi> ...]
 
-The `.poi` files are large (the Czech one is ~165 MB), so the developer downloads them by hand and
-this script only ever reads them.
+The published tiles cover Europe: every top-level country file of
+https://download.mapsforge.org/pois/europe/ (49 files, ~7 GB; the Czech one is ~165 MB), passed in
+one run so border peaks are merged once. The developer downloads them by hand and this script only
+ever reads them; the whole run takes well under a minute and a few hundred MB of memory.
+
+Pass the country files only, never a country's regional subdirectory as well (`germany.poi` *or*
+`germany/*.poi`): the same POIs counted twice would lower MIN_POIS_FOR_COVERED_TILE in effect, and a
+tile the extracts merely touch could be declared covered.
+
+New coverage in the same format moves the data repository's `v1` tag forward: an installed app
+reads a 404 as "not covered yet" and asks again later, so it picks the new tiles up without an
+update.
 
 Format of a `.peaks` file (big-endian, the same style as `HorizonProfileCodec`; the Kotlin reader is
 `domain/horizon/LandmarkTileCodec.kt`, and the two are held together by a fixture this script
