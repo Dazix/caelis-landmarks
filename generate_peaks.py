@@ -8,7 +8,9 @@ writes one small `.peaks` file per 1 degree tile, named exactly like the elevati
 public data repository and downloaded by the app together with the elevation tiles; nothing here
 goes into the APK.
 
-    python3 data_pipeline/generate_peaks.py [--min-pois=N] <out_dir> <region.poi> [<region.poi> ...]
+    <venv>/bin/python data_pipeline/generate_peaks.py [--min-pois=N] <out_dir> <region.poi> [<region.poi> ...]
+
+    python3 -m venv <venv> && <venv>/bin/pip install --require-hashes -r data_pipeline/requirements-peaks.txt
 
 The published tiles cover the world: the mapsforge files `data_pipeline/world_pois.py` lists and downloads
 (~310 files, ~14 GB), passed in one run so border peaks are merged once, with `--min-pois=1`. The
@@ -52,8 +54,9 @@ produced, checked in under `app/src/test/resources/landmarks/`):
 
 The languages are the app's (LANGUAGES). "Latn" is a Latin-script spelling from OpenStreetMap's own
 tags (LATIN_TAGS), written only when `name` is in another script, so a peak in Japan or Greece has
-something every user can read. Nothing is transliterated here: a machine reading of a Chinese or
-Japanese name is often wrong, and a wrong name is worse than the local one. A reader ignores a key
+something every user can read. Where OpenStreetMap has neither a Latin spelling nor an English
+name, `transliterate.py` spells it out (Cyrillic, Greek, Korean, Chinese, Japanese kana; never
+Japanese kanji, Arabic or Hebrew, where a machine reading is too often wrong). A reader ignores a key
 it does not know, so a new app language is a regeneration, not a new format.
 
 A change to this layout is a new `version` here and in the reader, and a new tag of the data
@@ -68,6 +71,10 @@ import struct
 import sys
 import time
 import unicodedata
+
+# The script's own directory, also under `python -I` (which the POI files, untrusted input, are read with).
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from transliterate import latin_spelling  # noqa: E402
 
 MAGIC = 0x434C4D4B
 VERSION = 2
@@ -217,7 +224,8 @@ def is_latin(text):
     "Śnieżka" and "Gerlachovský štít" are; "富士山", "Όλυμπος" and "Эльбрус" are not. Digits,
     spaces and punctuation do not count either way.
     """
-    letters = [ch for ch in text if unicodedata.category(ch).startswith("L")]
+    # A modifier letter (the Hawaiian ʻokina in "Puʻukaʻala") belongs to no script of its own.
+    letters = [ch for ch in text if unicodedata.category(ch) in ("Lu", "Ll", "Lt", "Lo")]
     return bool(letters) and all(unicodedata.name(ch, "").startswith("LATIN") for ch in letters)
 
 
@@ -228,8 +236,11 @@ def latin_name(tags):
     return next((c for c in candidates if c and is_latin(c)), "")
 
 
-def other_names(tags, name):
-    """{key: name} of a peak beyond its local `name`: each app language OSM has, and "Latn"."""
+def other_names(tags, name, region=""):
+    """{key: name} of a peak beyond its local `name`: each app language OSM has, and "Latn".
+
+    `region` is the mapsforge file the peak came from (`japan`), which [transliterate] needs.
+    """
     names = {}
     for language in LANGUAGES:
         value = tags.get("name:" + language, "")
@@ -237,6 +248,10 @@ def other_names(tags, name):
             names[language] = value
     if not is_latin(name):
         latin = latin_name(tags)
+        if not latin and not names.get("en"):
+            # Only when nothing better is there: a reader is shown English before "Latn".
+            latin = latin_spelling(name, tags, region)
+            latin = latin if is_latin(latin) else ""
         if latin and latin != name:
             names[LATIN_KEY] = latin
     return names
@@ -254,6 +269,7 @@ def peak_records(db_path):
     English one, then any app language's) so a reader that finds no translation still has
     something to show.
     """
+    region = os.path.basename(db_path)[: -len(".poi")] if db_path.endswith(".poi") else os.path.basename(db_path)
     conn = sqlite3.connect("file:%s?mode=ro" % db_path, uri=True)
     try:
         ids = [
@@ -289,7 +305,7 @@ def peak_records(db_path):
                 "lon_e6": lon_e6,
                 "ele": ele,
                 "name": name,
-                "names": other_names(tags, name),
+                "names": other_names(tags, name, region),
             }
     finally:
         conn.close()

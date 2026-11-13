@@ -20,7 +20,7 @@ and it is no longer regenerated.
 | Tag | Names | Countries | Tiles | Peaks |
 | --- | --- | --- | --- | --- |
 | `v1` (frozen) | local, Czech, English | The world: every mapsforge POI file `world_pois.py` lists (312 files, downloaded 2026-11-13) | 16 910 | 500 282 |
-| `v2` | local, Czech, German, English, Polish, Slovak, Latin spelling | The same 312 files | 16 910 | 500 397 |
+| `v2` | local, Czech, German, English, Polish, Slovak, Latin spelling (60 882 peaks) | The same 312 files | 16 910 | 500 397 |
 
 `v2` holds a few more peaks than `v1` because a peak with no `name` is kept when it has a name in any
 of the app's languages, not only in English or Czech.
@@ -47,9 +47,12 @@ Big-endian, the `.peaks` format read by `LandmarkTileCodec` in the app:
 
 The version is `2`. A key is a language of the app (`cs`, `de`, `en`, `pl`, `sk`, from OSM
 `name:<language>`) or `Latn`: a Latin-script spelling of a local name written in another script,
-taken from OSM's own tags (`int_name`, `name:*-Latn`, `name:zh_pinyin`, `name:ja_rm`). Nothing is
-transliterated, so a peak whose OSM entry has no Latin spelling has no `Latn`. A reader ignores a
-key it does not know: a new language is a regeneration under the same tag.
+taken from OSM's own tags (`int_name`, `name:*-Latn`, `name:zh_pinyin`, `name:ja_rm`). Where
+OSM has neither such a tag nor an English name, `transliterate.py` spells it out: Cyrillic (with
+the Bulgarian and Ukrainian conventions), Greek (ELOT 743), Georgian, Armenian, Korean (Revised
+Romanization as pronounced), Chinese (pinyin without tones) and Japanese kana (Hepburn). Japanese
+kanji, Arabic, Hebrew and the remaining scripts get no `Latn`: a machine reading of those is too
+often wrong. A reader ignores a key it does not know: a new language is a regeneration under the same tag.
 
 `v1` had version `1` and three fixed names per peak (`name`, `name_cs`, `name_en`, empty = missing).
 
@@ -60,8 +63,9 @@ built from OpenStreetMap. The script keeps `natural=peak` and `natural=volcano` 
 both a name and an elevation:
 
 ```bash
+python3 -m venv venv && venv/bin/pip install --require-hashes -r requirements-peaks.txt
 python3 world_pois.py download pois/      # ~14 GB, three connections; run again to update
-find pois -name '*.poi' | sort | xargs python3 generate_peaks.py --min-pois=1 out/
+find pois -name '*.poi' | sort | xargs venv/bin/python -I generate_peaks.py --min-pois=1 out/
 ```
 
 `world_pois.py` takes each country once, as its country file or its regional files, never both:
