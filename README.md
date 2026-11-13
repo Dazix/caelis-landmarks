@@ -10,18 +10,19 @@ https://raw.githubusercontent.com/Dazix/caelis-landmarks/v1/tiles/<N50>/<N50E015
 ```
 
 A request carries nothing but the tile name. A tag stands for a file format: a change to the format
-gets a new tag and a matching change in the app. While the app is not yet released, `v1` is moved
-forward when the data grows.
+gets a new tag and a matching change in the app. New coverage in the same format moves `v1` forward:
+an installed app treats a 404 as "not covered yet" and asks again later, so it picks up new tiles
+without an update.
 
 ## Coverage
 
 | Tag | Countries | Tiles | Peaks |
 | --- | --- | --- | --- |
-| `v1` | Czech Republic, Slovakia, Austria, Poland, Germany | 148 | 70 296 |
+| `v1` | Europe: every top-level country file of mapsforge `pois/europe/` (49 files, downloaded 2026-11-13), incl. Iceland, the Azores, Madeira, Cyprus, Turkey and Georgia; not Russia | 1 273 | 274 795 |
 
 Every tile that the source data covers has a file, so an empty tile means there are no named peaks
-there. A missing file (HTTP 404) means the region is not covered. Tiles on a border only include the
-peaks from the countries listed above.
+there. A missing file (HTTP 404) means the region is not covered. Tiles on the edge of the coverage
+(e.g. along the Russian border) only include the peaks from the countries listed above.
 
 ## Format
 
@@ -43,8 +44,12 @@ built from OpenStreetMap. The script keeps `natural=peak` and `natural=volcano` 
 both a name and an elevation:
 
 ```bash
-python3 generate_peaks.py out/ czech-republic.poi [more .poi files…]
+python3 generate_peaks.py out/ europe/*.poi
 ```
+
+Use the country files only (`europe/*.poi`), not the regional subdirectories of the larger
+countries as well: the same POIs counted twice would lower the threshold that decides whether a tile
+is covered.
 
 ## Licence
 
