@@ -8,16 +8,23 @@ writes one small `.peaks` file per 1 degree tile, named exactly like the elevati
 public data repository and downloaded by the app together with the elevation tiles; nothing here
 goes into the APK.
 
-    python3 data_pipeline/generate_peaks.py <out_dir> <region.poi> [<region.poi> ...]
+    python3 data_pipeline/generate_peaks.py [--min-pois=N] <out_dir> <region.poi> [<region.poi> ...]
 
-The published tiles cover Europe: every top-level country file of
-https://download.mapsforge.org/pois/europe/ (49 files, ~7 GB; the Czech one is ~165 MB), passed in
-one run so border peaks are merged once. The developer downloads them by hand and this script only
-ever reads them; the whole run takes well under a minute and a few hundred MB of memory.
+The published tiles cover the world: the mapsforge files `data_pipeline/world_pois.py` lists and downloads
+(~310 files, ~14 GB), passed in one run so border peaks are merged once, with `--min-pois=1`. The
+developer downloads them by hand and this script only ever reads them; the whole run takes about a
+minute and under half a GB of memory.
 
-Pass the country files only, never a country's regional subdirectory as well (`germany.poi` *or*
-`germany/*.poi`): the same POIs counted twice would lower MIN_POIS_FOR_COVERED_TILE in effect, and a
-tile the extracts merely touch could be declared covered.
+Each country goes in once, as its country file *or* its regional subdirectory (`germany.poi` *or*
+`germany/*.poi`), never both: the same POIs counted twice would lower the coverage threshold in
+effect, and a tile the extracts merely touch could be declared covered.
+
+`--min-pois` is the coverage threshold (MIN_POIS_FOR_COVERED_TILE by default). With the whole world
+as input both sides of every border are there, so a tile with any POI at all is covered and one
+POI is enough. A tile with none stays a 404 even then: it is mostly ocean, but it is also every
+island mapsforge has no file for (the Lesser Antilles, Bermuda, the Falklands, Antarctica), and an
+empty file there would tell the app those peaks do not exist, for good. Never lower it for a
+partial run.
 
 New coverage in the same format moves the data repository's `v1` tag forward: an installed app
 reads a 404 as "not covered yet" and asks again later, so it picks the new tiles up without an
@@ -49,6 +56,7 @@ import re
 import sqlite3
 import struct
 import sys
+import time
 
 MAGIC = 0x434C4D4B
 VERSION = 1
@@ -286,33 +294,88 @@ class Deduper:
         return True
 
 
-def generate(out_dir, poi_paths):
-    """Writes every tile and returns (peak_count, tile_count, byte_count)."""
+def parse_min_pois(text):
+    """`1` -> 1: the coverage threshold --min-pois sets, a whole number of at least one."""
+    value = int(text)
+    if value < 1:
+        raise ValueError("expected a threshold of at least 1, got %r" % text)
+    return value
+
+
+def _mb(n):
+    return "%.1f MB" % (n / 1e6)
+
+
+def _duration(seconds):
+    seconds = int(round(seconds))
+    return "%d:%02d:%02d" % (seconds // 3600, seconds // 60 % 60, seconds % 60)
+
+
+def generate(out_dir, poi_paths, min_pois=MIN_POIS_FOR_COVERED_TILE, log=None):
+    """Writes every tile and returns (peak_count, tile_count, byte_count).
+
+    `min_pois` is how many POIs of any kind, over all inputs together, make a tile covered. Lower than
+    the default only when the inputs are the whole world (see the module docstring).
+
+    `log`, when given, is called with one line of progress at a time (the command line prints it, the
+    tests pass nothing): per input file its size, the peaks it added and the duplicates it repeated,
+    with the time taken and an estimate of what is left from the bytes still to read.
+    """
+    say = log or (lambda line: None)
+    started = time.monotonic()
+    input_bytes = sum(os.path.getsize(p) for p in poi_paths)
+    done_bytes = 0
     tiles = {}
     counts = {}
     dedupe = Deduper()
-    for path in poi_paths:
+    for index, path in enumerate(poi_paths, 1):
+        file_started = time.monotonic()
+        size = os.path.getsize(path)
+        pois = 0
         for key, n in poi_counts(path).items():
             counts[key] = counts.get(key, 0) + n
+            pois += n
+        kept = repeated = 0
         for rec in peak_records(path):
             if dedupe.add(rec):
                 tiles.setdefault(tile_key(rec["lat_e6"], rec["lon_e6"]), []).append(rec)
+                kept += 1
+            else:
+                repeated += 1
+        done_bytes += size
+        elapsed = time.monotonic() - started
+        left = elapsed / done_bytes * (input_bytes - done_bytes) if done_bytes else 0
+        say(
+            "[%*d/%d] %s  %s, %d POIs: +%d peaks, %d duplicates  (%.1f s; %s of %s read, %s elapsed, ~%s left)"
+            % (
+                len(str(len(poi_paths))), index, len(poi_paths), os.path.basename(path), _mb(size), pois,
+                kept, repeated, time.monotonic() - file_started, _mb(done_bytes), _mb(input_bytes),
+                _duration(elapsed), _duration(left),
+            )
+        )
 
     # Coverage is decided first, from every input together, and only covered tiles are written. A file
     # is a country whose bounding box reaches into its neighbours: a tile it merely touches holds a few
     # POIs and maybe one peak, and writing that as a tile would answer "these are all the peaks here"
     # for ground the extract never surveyed, instead of the 404 that means "not covered". The peaks of
     # such a tile are dropped with it; the extract that does cover it carries them.
-    covered = {key for key, n in counts.items() if n >= MIN_POIS_FOR_COVERED_TILE}
+    # A POI on the pole or the antimeridian rounds to a row or column no tile has (lat 90, lon 180).
+    covered = {(la, lo) for (la, lo), n in counts.items()
+               if n >= min_pois and -90 <= la <= 89 and -180 <= lo <= 179}
+    found = sum(len(records) for records in tiles.values())
     tiles = {key: records for key, records in tiles.items() if key in covered}
     for key in covered:
         tiles.setdefault(key, [])
+    say(
+        "coverage: %d tiles covered, %d of them empty; %d peaks in tiles not covered dropped"
+        % (len(tiles), sum(1 for r in tiles.values() if not r), found - sum(len(r) for r in tiles.values()))
+    )
 
     peaks = 0
     total_bytes = 0
+    written = 0
+    step = max(1, len(tiles) // 10)
     for (lat_south, lon_west), records in tiles.items():
-        if not (-90 <= lat_south <= 89 and -180 <= lon_west <= 179):
-            continue
         data = encode_tile(records)
         target = tile_path(out_dir, lat_south, lon_west)
         os.makedirs(os.path.dirname(target), exist_ok=True)
@@ -322,19 +385,32 @@ def generate(out_dir, poi_paths):
         os.replace(part, target)
         peaks += len(records)
         total_bytes += len(data)
+        written += 1
+        if written % step == 0 or written == len(tiles):
+            say("writing: %d/%d tiles, %s  (%s elapsed)" % (written, len(tiles), _mb(total_bytes), _duration(time.monotonic() - started)))
+    say("done in %s: %d peaks, %d tiles, %s from %s of input" % (
+        _duration(time.monotonic() - started), peaks, len(tiles), _mb(total_bytes), _mb(input_bytes)))
     return peaks, len(tiles), total_bytes
 
 
 def main(argv):
-    if len(argv) < 3:
+    args = argv[1:]
+    min_pois = MIN_POIS_FOR_COVERED_TILE
+    if args and args[0].startswith("--min-pois="):
+        try:
+            min_pois = parse_min_pois(args.pop(0).partition("=")[2])
+        except ValueError as e:
+            sys.stderr.write("generate_peaks: %s\n" % e)
+            return 2
+    if len(args) < 2:
         sys.stderr.write(__doc__.split("\n\n")[1] + "\n")
         return 2
-    out_dir, poi_paths = argv[1], argv[2:]
+    out_dir, poi_paths = args[0], args[1:]
     for path in poi_paths:
         if not os.path.isfile(path):
             sys.stderr.write("generate_peaks: no such file: %s\n" % path)
             return 1
-    peaks, tile_count, total_bytes = generate(out_dir, poi_paths)
+    peaks, tile_count, total_bytes = generate(out_dir, poi_paths, min_pois, lambda line: print(line, flush=True))
     print("peaks=%d tiles=%d bytes=%d" % (peaks, tile_count, total_bytes))
     return 0
 

@@ -18,11 +18,12 @@ without an update.
 
 | Tag | Countries | Tiles | Peaks |
 | --- | --- | --- | --- |
-| `v1` | Europe: every top-level country file of mapsforge `pois/europe/` (49 files, downloaded 2026-11-13), incl. Iceland, the Azores, Madeira, Cyprus, Turkey and Georgia; not Russia | 1 273 | 274 795 |
+| `v1` | The world: every mapsforge POI file `world_pois.py` lists (312 files, downloaded 2026-11-13) | 16 910 | 500 282 |
 
-Every tile that the source data covers has a file, so an empty tile means there are no named peaks
-there. A missing file (HTTP 404) means the region is not covered. Tiles on the edge of the coverage
-(e.g. along the Russian border) only include the peaks from the countries listed above.
+Every tile that holds any OpenStreetMap POI has a file, so an empty tile means there are no named
+peaks there. A missing file (HTTP 404) means the region is not covered: open ocean, and land
+mapsforge has no file for (Antarctica, the Lesser Antilles, Bermuda, the Falklands, South Georgia).
+A tile on a coast facing such an island holds only the peaks of the covered side.
 
 ## Format
 
@@ -44,12 +45,14 @@ built from OpenStreetMap. The script keeps `natural=peak` and `natural=volcano` 
 both a name and an elevation:
 
 ```bash
-python3 generate_peaks.py out/ europe/*.poi
+python3 world_pois.py download pois/      # ~14 GB, three connections; run again to update
+find pois -name '*.poi' | sort | xargs python3 generate_peaks.py --min-pois=1 out/
 ```
 
-Use the country files only (`europe/*.poi`), not the regional subdirectories of the larger
-countries as well: the same POIs counted twice would lower the threshold that decides whether a tile
-is covered.
+`world_pois.py` takes each country once, as its country file or its regional files, never both:
+the same POIs counted twice would lower the threshold that decides whether a tile is covered.
+`--min-pois=1` is only right for the whole world, where both sides of every border are in; a
+partial run keeps the default.
 
 ## Licence
 
