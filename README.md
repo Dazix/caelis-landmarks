@@ -6,19 +6,24 @@ The app downloads only the tile it needs, using the same tile names as its eleva
 (`tiles/N50/N50E015.peaks`), from a pinned tag:
 
 ```
-https://raw.githubusercontent.com/Dazix/caelis-landmarks/v1/tiles/<N50>/<N50E015>.peaks
+https://raw.githubusercontent.com/Dazix/caelis-landmarks/v2/tiles/<N50>/<N50E015>.peaks
 ```
 
 A request carries nothing but the tile name. A tag stands for a file format: a change to the format
-gets a new tag and a matching change in the app. New coverage in the same format moves `v1` forward:
-an installed app treats a 404 as "not covered yet" and asks again later, so it picks up new tiles
-without an update.
+gets a new tag and a matching change in the app. New coverage in the same format moves the current
+tag (`v2`) forward: an installed app treats a 404 as "not covered yet" and asks again later, so it
+picks up new tiles without an update. `v1` is frozen: apps that read it keep its world coverage,
+and it is no longer regenerated.
 
 ## Coverage
 
-| Tag | Countries | Tiles | Peaks |
-| --- | --- | --- | --- |
-| `v1` | The world: every mapsforge POI file `world_pois.py` lists (312 files, downloaded 2026-11-13) | 16 910 | 500 282 |
+| Tag | Names | Countries | Tiles | Peaks |
+| --- | --- | --- | --- | --- |
+| `v1` (frozen) | local, Czech, English | The world: every mapsforge POI file `world_pois.py` lists (312 files, downloaded 2026-11-13) | 16 910 | 500 282 |
+| `v2` | local, Czech, German, English, Polish, Slovak, Latin spelling | The same 312 files | 16 910 | 500 397 |
+
+`v2` holds a few more peaks than `v1` because a peak with no `name` is kept when it has a name in any
+of the app's languages, not only in English or Czech.
 
 Every tile that holds any OpenStreetMap POI has a file, so an empty tile means there are no named
 peaks there. A missing file (HTTP 404) means the region is not covered: open ocean, and land
@@ -36,7 +41,17 @@ Big-endian, the `.peaks` format read by `LandmarkTileCodec` in the app:
 | count | int |
 | per peak: `lat_e6`, `lon_e6` | int, int (degrees × 10⁶) |
 | per peak: `ele_m` | short (metres) |
-| per peak: `name`, `name_cs`, `name_en` | Java modified UTF-8 (`writeUTF`), empty = missing |
+| per peak: `name` | Java modified UTF-8 (`writeUTF`), the local name, never empty |
+| per peak: `n` | unsigned byte, how many other names follow |
+| per name: `key`, `name` | two `writeUTF`, sorted by key; never empty, never equal to `name` |
+
+The version is `2`. A key is a language of the app (`cs`, `de`, `en`, `pl`, `sk`, from OSM
+`name:<language>`) or `Latn`: a Latin-script spelling of a local name written in another script,
+taken from OSM's own tags (`int_name`, `name:*-Latn`, `name:zh_pinyin`, `name:ja_rm`). Nothing is
+transliterated, so a peak whose OSM entry has no Latin spelling has no `Latn`. A reader ignores a
+key it does not know: a new language is a regeneration under the same tag.
+
+`v1` had version `1` and three fixed names per peak (`name`, `name_cs`, `name_en`, empty = missing).
 
 ## Regenerating
 

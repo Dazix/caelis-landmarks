@@ -26,25 +26,35 @@ island mapsforge has no file for (the Lesser Antilles, Bermuda, the Falklands, A
 empty file there would tell the app those peaks do not exist, for good. Never lower it for a
 partial run.
 
-New coverage in the same format moves the data repository's `v1` tag forward: an installed app
+New coverage in the same format moves the data repository's `v2` tag forward: an installed app
 reads a 404 as "not covered yet" and asks again later, so it picks the new tiles up without an
-update.
+update. `v1` (local, Czech and English names only) is frozen at its world coverage and no longer
+written.
 
 Format of a `.peaks` file (big-endian, the same style as `HorizonProfileCodec`; the Kotlin reader is
 `domain/horizon/LandmarkTileCodec.kt`, and the two are held together by a fixture this script
 produced, checked in under `app/src/test/resources/landmarks/`):
 
     int    magic    0x434C4D4B  ("CLMK")
-    int    version  1
+    int    version  2
     int    count
     count x {
         int   lat_e6      degrees * 1e6, rounded
         int   lon_e6
         short ele_m       metres above sea level, 1..8900
         UTF   name        java.io.DataOutput.writeUTF (modified UTF-8, 2-byte length); never empty
-        UTF   name_cs     empty = missing
-        UTF   name_en     empty = missing
+        ubyte n           how many other names follow, sorted by key
+        n x {
+            UTF key       a language of LANGUAGES, or "Latn"
+            UTF name      never empty, never the same as `name`
+        }
     }
+
+The languages are the app's (LANGUAGES). "Latn" is a Latin-script spelling from OpenStreetMap's own
+tags (LATIN_TAGS), written only when `name` is in another script, so a peak in Japan or Greece has
+something every user can read. Nothing is transliterated here: a machine reading of a Chinese or
+Japanese name is often wrong, and a wrong name is worse than the local one. A reader ignores a key
+it does not know, so a new app language is a regeneration, not a new format.
 
 A change to this layout is a new `version` here and in the reader, and a new tag of the data
 repository, because the app downloads from a pinned tag.
@@ -57,9 +67,19 @@ import sqlite3
 import struct
 import sys
 import time
+import unicodedata
 
 MAGIC = 0x434C4D4B
-VERSION = 1
+VERSION = 2
+
+# The languages the app is translated into; a peak's `name:<language>` is kept for each.
+LANGUAGES = ("cs", "de", "en", "pl", "sk")
+
+LATIN_KEY = "Latn"
+
+# Where a Latin spelling of a name in another script is found, in order of preference; then any
+# `name:<language>-Latn` (OSM writes it in either case, `name:ja-latn` most of all).
+LATIN_TAGS = ("int_name", "name:zh_pinyin", "name:ja_rm")
 
 PEAK_CATEGORIES = ("peak", "volcano")
 
@@ -176,15 +196,50 @@ def java_utf(text):
 
 
 def encode_tile(records):
-    """Bytes of one `.peaks` file. `records` are dicts with lat_e6, lon_e6, ele, name, name_cs, name_en."""
+    """Bytes of one `.peaks` file. `records` are dicts with lat_e6, lon_e6, ele, name and names
+    ({key: name}, the other names, none of them empty or equal to `name`)."""
     ordered = sorted(records, key=lambda r: (r["lat_e6"], r["lon_e6"], r["name"]))
     out = bytearray(struct.pack(">iii", MAGIC, VERSION, len(ordered)))
     for r in ordered:
         out += struct.pack(">iih", r["lat_e6"], r["lon_e6"], r["ele"])
         out += java_utf(r["name"])
-        out += java_utf(r["name_cs"])
-        out += java_utf(r["name_en"])
+        names = sorted(r["names"].items())
+        out += struct.pack(">B", len(names))
+        for key, name in names:
+            out += java_utf(key)
+            out += java_utf(name)
     return bytes(out)
+
+
+def is_latin(text):
+    """True when every letter of `text` is Latin script, and it has at least one.
+
+    "Śnieżka" and "Gerlachovský štít" are; "富士山", "Όλυμπος" and "Эльбрус" are not. Digits,
+    spaces and punctuation do not count either way.
+    """
+    letters = [ch for ch in text if unicodedata.category(ch).startswith("L")]
+    return bool(letters) and all(unicodedata.name(ch, "").startswith("LATIN") for ch in letters)
+
+
+def latin_name(tags):
+    """A Latin-script spelling OSM carries for a name in another script, or "" when it has none."""
+    candidates = [tags.get(key, "") for key in LATIN_TAGS]
+    candidates[1:1] = [tags[key] for key in sorted(tags) if key.startswith("name:") and key.lower().endswith("-latn")]
+    return next((c for c in candidates if c and is_latin(c)), "")
+
+
+def other_names(tags, name):
+    """{key: name} of a peak beyond its local `name`: each app language OSM has, and "Latn"."""
+    names = {}
+    for language in LANGUAGES:
+        value = tags.get("name:" + language, "")
+        if value and value != name:
+            names[language] = value
+    if not is_latin(name):
+        latin = latin_name(tags)
+        if latin and latin != name:
+            names[LATIN_KEY] = latin
+    return names
 
 
 def _signed_int32(value):
@@ -196,7 +251,8 @@ def peak_records(db_path):
 
     A record needs a name and a height: a nameless peak has nothing to print, and one without a
     height cannot be placed on the ridge. The local name is always filled (falling back to the
-    English or Czech one) so a reader that finds no translation still has something to show.
+    English one, then any app language's) so a reader that finds no translation still has
+    something to show.
     """
     conn = sqlite3.connect("file:%s?mode=ro" % db_path, uri=True)
     try:
@@ -218,9 +274,8 @@ def peak_records(db_path):
             ele = parse_elevation(tags.get("ele"))
             if ele is None:
                 continue
-            name_cs = tags.get("name:cs", "")
-            name_en = tags.get("name:en", "")
-            name = tags.get("name", "") or name_en or name_cs
+            name = tags.get("name", "") or next(
+                (tags["name:" + lang] for lang in ("en",) + LANGUAGES if tags.get("name:" + lang)), "")
             if not name:
                 continue
             lat_e6 = _signed_int32(int(round(lat * 1_000_000)))
@@ -234,8 +289,7 @@ def peak_records(db_path):
                 "lon_e6": lon_e6,
                 "ele": ele,
                 "name": name,
-                "name_cs": name_cs,
-                "name_en": name_en,
+                "names": other_names(tags, name),
             }
     finally:
         conn.close()
@@ -284,11 +338,10 @@ class Deduper:
                         and abs(other["lat_e6"] - rec["lat_e6"]) <= limit
                         and abs(other["lon_e6"] - rec["lon_e6"]) <= limit
                     ):
-                        # Keep whichever carries more of the translations.
-                        if not other["name_cs"] and rec["name_cs"]:
-                            other["name_cs"] = rec["name_cs"]
-                        if not other["name_en"] and rec["name_en"]:
-                            other["name_en"] = rec["name_en"]
+                        # The first record wins each key; the second only fills what it lacks.
+                        for k, v in rec["names"].items():
+                            if k not in other["names"] and v != other["name"]:
+                                other["names"][k] = v
                         return False
         self._cells.setdefault((la, lo), []).append(rec)
         return True
